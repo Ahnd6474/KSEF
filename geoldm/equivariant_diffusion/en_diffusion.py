@@ -1,4 +1,3 @@
-from equivariant_diffusion import utils
 import math
 import numpy as np
 import torch
@@ -751,10 +750,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
         """
-        z_x = utils.sample_center_gravity_zero_gaussian_with_mask(
+        z_x = diffusion_utils.sample_center_gravity_zero_gaussian_with_mask(
             size=(n_samples, n_nodes, self.n_dims), device=node_mask.device,
             node_mask=node_mask)
-        z_h = utils.sample_gaussian_with_mask(
+        z_h = diffusion_utils.sample_gaussian_with_mask(
             size=(n_samples, n_nodes, self.in_node_nf), device=node_mask.device,
             node_mask=node_mask)
         z = torch.cat([z_x, z_h], dim=2)
@@ -989,10 +988,10 @@ class EnHierarchicalVAE(torch.nn.Module):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
         """
-        z_x = utils.sample_center_gravity_zero_gaussian_with_mask(
+        z_x = diffusion_utils.sample_center_gravity_zero_gaussian_with_mask(
             size=(n_samples, n_nodes, self.n_dims), device=node_mask.device,
             node_mask=node_mask)
-        z_h = utils.sample_gaussian_with_mask(
+        z_h = diffusion_utils.sample_gaussian_with_mask(
             size=(n_samples, n_nodes, self.latent_node_nf), device=node_mask.device,
             node_mask=node_mask)
         z = torch.cat([z_x, z_h], dim=2)
