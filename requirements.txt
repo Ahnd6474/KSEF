@@ -7,4 +7,4 @@ imageio>=2.9
 msgpack>=1.0
 
 # Optional: enable RDKit-based functionality in geoldm.qm9 modules
-rdkit-pypi>=2022.9.5
+rdkit
