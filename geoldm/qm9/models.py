@@ -127,8 +127,11 @@ def get_latent_diffusion(args, device, dataset_info, dataloader_train):
 
     if args.ae_path is not None:
         fn = 'generative_model_ema.npy' if first_stage_args.ema_decay > 0 else 'generative_model.npy'
-        flow_state_dict = torch.load(join(args.ae_path, fn),
-                                        map_location=device)
+        checkpoint_path = join(args.ae_path, fn)
+        try:
+            flow_state_dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        except TypeError:  # pragma: no cover - compatibility with older torch versions
+            flow_state_dict = torch.load(checkpoint_path, map_location=device)
         first_stage_model.load_state_dict(flow_state_dict)
 
     # Create the second stage model (Latent Diffusions).
