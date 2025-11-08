@@ -1,0 +1,10 @@
+# Core dependencies
+numpy>=1.21
+scipy>=1.7
+torch>=1.12
+matplotlib>=3.4
+imageio>=2.9
+msgpack>=1.0
+
+# Optional: enable RDKit-based functionality in geoldm.qm9 modules
+rdkit
