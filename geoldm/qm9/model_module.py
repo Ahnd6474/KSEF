@@ -38,6 +38,22 @@ __all__ = [
 ]
 
 
+def _load_state_dict(checkpoint: Path, device: torch.device) -> Any:
+    """Load a checkpoint handling both old and new ``torch.load`` defaults."""
+
+    with checkpoint.open("rb") as handle:
+        prefix = handle.read(64)
+    if prefix.startswith(b"version https://git-lfs.github.com/spec"):
+        raise FileNotFoundError(
+            f"{checkpoint!s} looks like a Git LFS pointer. Download the actual weights before loading."
+        )
+
+    try:
+        return torch.load(checkpoint, map_location=device, weights_only=False)
+    except TypeError:  # pragma: no cover - for compatibility with old PyTorch
+        return torch.load(checkpoint, map_location=device)
+
+
 def _resolve_checkpoint_path(
     checkpoint: Path,
     prefer_ema: bool = True,
@@ -139,7 +155,7 @@ def load_model(
 
     if checkpoint_path is not None:
         checkpoint = _resolve_checkpoint_path(Path(checkpoint_path), prefer_ema=prefer_ema)
-        state_dict = torch.load(checkpoint, map_location=device)
+        state_dict = _load_state_dict(checkpoint, device)
         model.load_state_dict(state_dict)
 
     model.eval()
