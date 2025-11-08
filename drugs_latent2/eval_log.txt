@@ -1,0 +1,1 @@
+Overview: val nll -596.199082830965 test nll -656.2112955306072 {'mol_stable': 0.0085, 'atm_stable': 0.8442798067333814}
