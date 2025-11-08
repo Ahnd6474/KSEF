@@ -145,7 +145,16 @@ def main() -> None:
 
     atom_types = one_hot[0].argmax(dim=-1).cpu().numpy()
     atom_symbols = [dataset_info["atom_decoder"][i] for i in atom_types]
-    visualize_molecule_3d(atom_symbols, positions[0].cpu().numpy())
+    visualize_molecule_3d(
+        atom_symbols,
+        positions[0].cpu().numpy(),
+        show=False,
+    )
+
+    print(
+        "Sanity check finished successfully. Molecule visualisation was generated",
+        "without opening an interactive window.",
+    )
 
 
 if __name__ == "__main__":
