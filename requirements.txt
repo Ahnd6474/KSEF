@@ -5,6 +5,7 @@ torch>=1.12
 matplotlib>=3.4
 imageio>=2.9
 msgpack>=1.0
+py3Dmol
 
 # Optional: enable RDKit-based functionality in geoldm.qm9 modules
 rdkit
