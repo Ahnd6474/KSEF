@@ -106,6 +106,9 @@ def main() -> None:
 
     if not torch.cuda.is_available():
         setattr(train_args, "cuda", False)
+        print('using CPU')
+    else:
+        print('using CUDA')
 
     dataset_info = get_dataset_info(train_args.dataset, train_args.remove_h)
     try:
@@ -148,7 +151,7 @@ def main() -> None:
     visualize_molecule_3d(
         atom_symbols,
         positions[0].cpu().numpy(),
-        show=False,
+        show=True,
     )
 
     print(
