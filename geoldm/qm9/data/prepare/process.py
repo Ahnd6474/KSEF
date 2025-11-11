@@ -36,7 +36,7 @@ def split_dataset(data, split_idxs):
 def process_xyz_files(data, process_file_fn, file_ext=None, file_idx_list=None, stack=True):
     """
     Take a set of datafiles and apply a predefined data processing script to each
-    one. Data can be stored in a directory, tarfile, or zipfile. An optional
+    one. data can be stored in a directory, tarfile, or zipfile. An optional
     file extension can be added.
 
     Parameters

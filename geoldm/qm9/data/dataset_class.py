@@ -9,7 +9,7 @@ import logging
 
 class ProcessedDataset(Dataset):
     """
-    Data structure for a pre-processed cormorant dataset.  Extends PyTorch Dataset.
+    data structure for a pre-processed cormorant dataset.  Extends PyTorch Dataset.
 
     Parameters
     ----------

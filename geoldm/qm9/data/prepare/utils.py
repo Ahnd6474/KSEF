@@ -20,10 +20,10 @@ def download_data(url, outfile='', binary=False):
         # Download url using urlopen
         with urlopen(url) as f:
             data = f.read()
-        logging.info('Data download success!')
+        logging.info('data download success!')
         success = True
     except:
-        logging.info('Data download failed!')
+        logging.info('data download failed!')
         success = False
 
     if binary:
