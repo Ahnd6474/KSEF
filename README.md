@@ -1,7 +1,8 @@
 # GeoLDM Core Modules
 
 이 저장소는 GeoLDM 원본 레포지토리에서 모델 실행에 필요한 최소 모듈만 분리하여 정리한 버전입니다.
-`geoldm` 패키지는 모델 정의, 사전 학습 체크포인트 로딩, 샘플링 및 시각화에 필요한 유틸리티만 포함하도록 가볍게 구성되어 있습니다.
+`geoldm` 패키지는 모델 정의, 사전 학습 체크포인트 로딩, 샘플링 및 시각화에 필요한 유틸리티만 포함하도록 가볍게 구성되어 있습니다
+.
 
 ## 폴더 구조
 
@@ -30,169 +31,137 @@
 
 ## 사용 방법
 
-아래 예시는 QM9 잠재 확산 모델 체크포인트를 불러와 샘플을 생성하고 시각화하는 전형적인 워크플로우입니다.
+아래 예시는 "SMILES → 3D → 잠재 공간 확산 → 3D 복원 → SMILES"의 전체 흐름을 최소 코드로 보여줍니다.
+각 단계가 함수로 분리되어 있어 다른 프로젝트나 노트북으로 쉽게 옮겨 쓸 수 있습니다.
 
 ```python
 from __future__ import annotations
 
-import os
 import pickle
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Dict, List, Tuple
 
 import torch
+import torch.nn.functional as F
 
+from geoldm import (
+    decode,
+    encode,
+    load_model,
+    run_diffusion,
+    smiles_to_3d,
+    structure_to_smiles,
+    visualize_molecule_3d,
+)
 from geoldm.configs import get_dataset_info
-from geoldm.qm9 import dataset, load_model, sampling, visualize_molecule_3d
+from geoldm.qm9 import dataset
 
 
-def _checkpoint_available(checkpoint_dir: Path) -> bool:
-    """Return ``True`` when the directory contains the expected artefacts."""
-
-    if not checkpoint_dir.is_dir():
-        return False
-
-    args_file = checkpoint_dir / "args.pickle"
-    if not args_file.exists():
-        return False
-
-    weight_files: Iterable[str] = (
-        "generative_model_ema.npy",
-        "generative_model.npy",
-    )
-    return any((checkpoint_dir / filename).exists() for filename in weight_files)
-
-
-def _checkpoint_candidates(root: Path) -> Iterator[Path]:
-    """Yield candidate checkpoint directories ordered by priority."""
-
-    seen: set[Path] = set()
-
-    env_override = os.environ.get("GEOLDM_CHECKPOINT_DIR")
-    if env_override:
-        env_path = Path(env_override).expanduser().resolve()
-        if _checkpoint_available(env_path):
-            seen.add(env_path)
-            yield env_path
-
-    defaults: Iterable[Path] = (
-        root / "outputs" / "geoldm_qm9",
-        root / "qm9_latent2",
-        root / "drugs_latent2",
-    )
-    for candidate in defaults:
-        candidate = candidate.resolve()
-        if candidate in seen:
-            continue
-        if _checkpoint_available(candidate):
-            seen.add(candidate)
-            yield candidate
-
-    for child in root.iterdir():
-        if child in seen or not child.is_dir():
-            continue
-        if _checkpoint_available(child):
-            seen.add(child)
-            yield child
-
-
-def _select_checkpoint(root: Path) -> Optional[Path]:
-    """Return the checkpoint directory that should be used for the test."""
-
-    candidates = list(_checkpoint_candidates(root))
-    if not candidates:
-        return None
-
-    def _score(path: Path) -> tuple[int, str]:
-        dataset_name = "zzzz"
-        args_path = path / "args.pickle"
-        try:
-            with args_path.open("rb") as handle:
-                args = pickle.load(handle)
-                dataset_name = getattr(args, "dataset", dataset_name)
-        except Exception:
-            pass
-
-        priority = 0 if dataset_name == "qm9" else 1
-        return (priority, str(path))
-
-    candidates.sort(key=_score)
-    return candidates[0]
-
-
-def main() -> None:
-    root = Path(__file__).resolve().parent
-    checkpoint_dir = _select_checkpoint(root)
-
-    if checkpoint_dir is None:
-        print("Skipping GeoLDM sanity check: no pretrained checkpoints were located.")
-        print(
-            "Place 'args.pickle' and either 'generative_model.npy' or"
-            " 'generative_model_ema.npy' in the repository to run the"
-            " integration test."
-        )
-        return
+def load_qm9_latent_diffusion(checkpoint_dir: Path):
+    """Load a pretrained latent diffusion model and its dataset metadata."""
 
     args_path = checkpoint_dir / "args.pickle"
-    with args_path.open("rb") as f:
-        train_args = pickle.load(f)
+    with args_path.open("rb") as handle:
+        args = pickle.load(handle)
 
-    print(f"Using GeoLDM checkpoint from {checkpoint_dir} (dataset={train_args.dataset}).")
-
+    # CPU에서도 바로 실행할 수 있도록 CUDA 플래그를 강제 조정.
     if not torch.cuda.is_available():
-        setattr(train_args, "cuda", False)
-        print('using CPU')
-    else:
-        print('using CUDA')
+        setattr(args, "cuda", False)
 
-    dataset_info = get_dataset_info(train_args.dataset, train_args.remove_h)
-    try:
-        dataloaders, _ = dataset.retrieve_dataloaders(train_args)
-    except Exception as exc:  # pragma: no cover - depends on optional assets
-        print(
-            "Could not retrieve training dataloaders; proceeding with a synthetic"
-            f" batch instead. (Reason: {exc})"
-        )
-        train_loader = None
-    else:
-        train_loader = dataloaders["train"]
+    dataset_info = get_dataset_info(args.dataset, args.remove_h)
+    dataloaders, _ = dataset.retrieve_dataloaders(args)
+    train_loader = dataloaders["train"]
 
-    try:
-        ldm, nodes_dist, _ = load_model(
-            stage="latent_diffusion",
-            args=train_args,
-            dataset_info=dataset_info,
-            dataloader_train=train_loader,
-            checkpoint_path=checkpoint_dir,
-        )
-    except FileNotFoundError as exc:
-        print(f"Skipping GeoLDM sanity check: {exc}")
-        print("Download the full checkpoint files to run the integration test.")
-        return
+    model, nodes_dist, _ = load_model(
+        stage="latent_diffusion",
+        args=args,
+        dataset_info=dataset_info,
+        dataloader_train=train_loader,
+        checkpoint_path=checkpoint_dir,
+    )
+    device = next(model.parameters()).device
+    return model, dataset_info, nodes_dist, device
 
-    device = next(ldm.parameters()).device
-    nodesxsample = nodes_dist.sample(4)
-    one_hot, charges, positions, node_mask = sampling.sample(
-        train_args,
-        device,
-        ldm,
-        dataset_info,
-        nodesxsample=nodesxsample,
-        prop_dist=None,
+
+def conformer_to_tensors(
+    conformer: Dict,
+    dataset_info: Dict,
+    device: torch.device,
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
+    """Convert a single RDKit conformer into GeoLDM-ready tensors."""
+
+    atom_decoder: List[str] = dataset_info["atom_decoder"]
+    atom_encoder = {symbol: idx for idx, symbol in enumerate(atom_decoder)}
+    atom_indices = torch.tensor(
+        [atom_encoder[symbol] for symbol in conformer["atom_symbols"]],
+        dtype=torch.long,
+        device=device,
     )
 
-    atom_types = one_hot[0].argmax(dim=-1).cpu().numpy()
+    one_hot = F.one_hot(atom_indices, num_classes=len(atom_decoder)).float()
+    positions = torch.tensor(conformer["coordinates"], dtype=torch.float32, device=device)
+
+    # Batch 차원을 추가하고 마스크를 구성합니다.
+    x = positions.unsqueeze(0)
+    h = {
+        "categorical": one_hot.unsqueeze(0),
+        # 전하 정보가 없으면 0으로 채웁니다.
+        "integer": torch.zeros(one_hot.shape[0], 1, device=device).unsqueeze(0),
+    }
+
+    node_mask = torch.ones(x.shape[0], x.shape[1], 1, device=device)
+    edge_mask = node_mask.squeeze(-1)[..., None] * node_mask.squeeze(-1)[:, None]
+    return x, h, node_mask, edge_mask
+
+
+def main():
+    checkpoint_dir = Path("./qm9_latent2")
+    model, dataset_info, nodes_dist, device = load_qm9_latent_diffusion(checkpoint_dir)
+
+    # 1) SMILES → 3D 좌표
+    conformer = smiles_to_3d("CCO")[0]
+    x, h, node_mask, edge_mask = conformer_to_tensors(conformer, dataset_info, device)
+
+    # 2) 3D 구조 → LDM 인코더 잠재벡터
+    z_x, z_sigma_x, z_h, z_sigma_h = encode(model, x, h, node_mask=node_mask, edge_mask=edge_mask)
+
+    # 3) 인코딩 벡터를 확산 모델로 보정/샘플링
+    n_nodes = x.size(1)
+    n_samples = 1
+    # GeoLDM의 확산 샘플러는 원래 nodes_dist를 사용하므로 동일한 노드 수로 호출합니다.
+    samples = run_diffusion(
+        model,
+        n_samples=n_samples,
+        n_nodes=n_nodes,
+        node_mask=node_mask,
+        edge_mask=edge_mask,
+        context=None,
+        fix_noise=True,
+    )
+    sampled_z, _ = samples  # (latent_x, latent_h)
+
+    # 4) 잠재벡터 → 3D 구조 복원
+    decoded_positions, decoded_features = decode(
+        model,
+        sampled_z,
+        node_mask=node_mask,
+        edge_mask=edge_mask,
+    )
+
+    # 5) 3D 구조 → SMILES
+    atom_types = decoded_features["categorical"].argmax(dim=-1)[0].cpu().numpy()
     atom_symbols = [dataset_info["atom_decoder"][i] for i in atom_types]
+    new_smiles, _ = structure_to_smiles(atom_symbols, decoded_positions[0].cpu().numpy())
+    print(f"Generated SMILES: {new_smiles}")
+
+    # 6) 구조 저장/시각화
     visualize_molecule_3d(
         atom_symbols,
-        positions[0].cpu().numpy(),
-        show=True,
+        decoded_positions[0].cpu().numpy(),
+        out_html="molecule_visualization.html",
+        show=False,
     )
-
-    print(
-        "Sanity check finished successfully. Molecule visualisation was generated",
-        "without opening an interactive window.",
-    )
+    print("Visualization saved to molecule_visualization.html")
 
 
 if __name__ == "__main__":
