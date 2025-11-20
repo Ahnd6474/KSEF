@@ -8,6 +8,8 @@ SMILES/3D interconversion and visualisation helpers.
 """
 from __future__ import annotations
 
+import logging
+import pickle
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -22,6 +24,9 @@ try:  # pragma: no cover - optional dependency used for interactive visualisatio
 except ModuleNotFoundError:  # pragma: no cover - graceful degradation when py3Dmol is absent
     py3Dmol = None  # type: ignore
 
+from geoldm.configs import get_dataset_info
+
+from . import dataset
 from .models import get_autoencoder, get_latent_diffusion, get_model
 
 try:  # pragma: no cover - rdkit is optional and heavy to import during tests
@@ -35,6 +40,7 @@ except ModuleNotFoundError:  # pragma: no cover - graceful degradation when rdki
 
 __all__ = [
     "load_model",
+    "load_qm9_latent_diffusion",
     "encode",
     "decode",
     "run_diffusion",
@@ -42,6 +48,46 @@ __all__ = [
     "smiles_to_3d",
     "structure_to_smiles",
 ]
+
+logger = logging.getLogger(__name__)
+
+
+def load_qm9_latent_diffusion(checkpoint_dir: Union[str, Path]):
+    """Load a pretrained latent diffusion model and its dataset metadata.
+
+    The helper mirrors the quick-start snippet in the README while
+    automatically selecting the best available device. When CUDA is present
+    the model is loaded on the GPU; otherwise it falls back to the CPU. A
+    log message is emitted describing which device is used.
+    """
+
+    checkpoint_dir = Path(checkpoint_dir)
+    args_path = checkpoint_dir / "args.pickle"
+    with args_path.open("rb") as handle:
+        args = pickle.load(handle)
+
+    if torch.cuda.is_available():
+        setattr(args, "cuda", True)
+        device = torch.device("cuda")
+        logger.info("CUDA detected. Loading latent diffusion model on GPU.")
+    else:
+        setattr(args, "cuda", False)
+        device = torch.device("cpu")
+        logger.info("CUDA not detected. Loading latent diffusion model on CPU.")
+
+    dataset_info = get_dataset_info(args.dataset, args.remove_h)
+    dataloaders, _ = dataset.retrieve_dataloaders(args)
+    train_loader = dataloaders["train"]
+
+    model, nodes_dist, _ = load_model(
+        stage="latent_diffusion",
+        args=args,
+        dataset_info=dataset_info,
+        dataloader_train=train_loader,
+        checkpoint_path=checkpoint_dir,
+        device=device,
+    )
+    return model, dataset_info, nodes_dist, device
 
 
 def _load_state_dict(checkpoint: Path, device: torch.device) -> Any:
