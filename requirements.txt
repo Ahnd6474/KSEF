@@ -9,6 +9,7 @@ py3Dmol
 pandas
 fastparquet
 pyarrow
-
+scikit-learn
+tqdm
 # Optional: enable RDKit-based functionality in geoldm.qm9 modules
 rdkit
