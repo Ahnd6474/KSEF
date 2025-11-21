@@ -11,5 +11,6 @@ fastparquet
 pyarrow
 scikit-learn
 tqdm
+tensorboard
 # Optional: enable RDKit-based functionality in geoldm.qm9 modules
 rdkit
