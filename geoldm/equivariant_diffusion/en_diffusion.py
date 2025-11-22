@@ -1017,6 +1017,15 @@ class EnHierarchicalVAE(torch.nn.Module):
     def decode(self, z_xh, node_mask=None, edge_mask=None, context=None):
         """Computes p(x|z)."""
 
+        expected_node_dim = self.n_dims + self.latent_node_nf
+        if z_xh.size(-1) != expected_node_dim:
+            raise ValueError(
+                "Expected latent input with {} features ({} for positions and {} for the latent node representation), "
+                "but received {}. If you are using a latent diffusion model, the `sample` method already returns "
+                "decoded coordinates and atom features — pass that output directly instead of calling `decode` again."
+                .format(expected_node_dim, self.n_dims, self.latent_node_nf, z_xh.size(-1))
+            )
+
         # Decoder output (reconstruction).
         x_recon, h_recon = self.decoder._forward(z_xh, node_mask, edge_mask, context)
         diffusion_utils.assert_mean_zero_with_mask(x_recon, node_mask)
