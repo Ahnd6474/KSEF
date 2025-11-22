@@ -12,5 +12,6 @@ pyarrow
 scikit-learn
 tqdm
 tensorboard
+nbformat
 # Optional: enable RDKit-based functionality in geoldm.qm9 modules
 rdkit
