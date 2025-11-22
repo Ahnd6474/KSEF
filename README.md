@@ -177,6 +177,12 @@ if __name__ == "__main__":
 
 필요 시 `geoldm.egnn`, `geoldm.equivariant_diffusion` 하위 모듈을 직접 임포트하여 네트워크를 커스터마이징할 수 있습니다.
 
+### 플라스틱 물성 예측 노트북(`plastic.ipynb`)
+
+- `Property Prediction` 섹션의 `train_multitask_mlp` 함수는 검증 손실이 개선될 때마다 베스트 모델 가중치와 입력/타깃 스케일러를 함께 `models/plastic_mlp_best.pt`로 저장합니다.
+- 저장 시점(에폭, 검증 손실)이 표준 출력과 TensorBoard에 기록되므로, 가장 우수한 체크포인트를 추적하기 쉽습니다.
+- 학습 후 `load_mlp_checkpoint` 함수를 사용해 베스트 모델과 스케일러를 다시 불러온 뒤 곧바로 추론에 활용할 수 있습니다.
+
 ## 라이선스
 
 원본 GeoLDM 프로젝트는 MIT 라이선스를 따릅니다. 이 정리본 또한 동일한 라이선스 정책을 적용합니다.
