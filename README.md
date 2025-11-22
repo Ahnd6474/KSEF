@@ -183,6 +183,22 @@ if __name__ == "__main__":
 - 저장 시점(에폭, 검증 손실)이 표준 출력과 TensorBoard에 기록되므로, 가장 우수한 체크포인트를 추적하기 쉽습니다.
 - 학습 후 `load_mlp_checkpoint` 함수를 사용해 베스트 모델과 스케일러를 다시 불러온 뒤 곧바로 추론에 활용할 수 있습니다.
 
+### Adam 최적화 + 3D 디코딩 스크립트(`plastic_design.py`)
+
+`plastic_design.py` 스크립트는 플라스틱 물성 surrogate(MLP)를 이용해 잠재벡터를 Adam으로 탐색하고, 결과를 DataFrame으로 저장한 뒤 가장 가까운 실데이터 SMILES를 3D 구조(XYZ)로 저장합니다.
+
+```bash
+python plastic_design.py \
+  --surrogate models/plastic_mlp_best.pt \
+  --plastic-df data/plastic.parquet \
+  --latent-cache data/plastic_latents.pt \
+  --steps 200 --lr 5e-3 --output-dir runs/adam_decode
+```
+
+- `runs/adam_decode/adam_history.parquet`: 최적화 과정의 지표 기록(step, J, penalty 등)
+- `runs/adam_decode/adam_best.parquet`: 최적화된 잠재벡터, 예측 물성, 가장 가까운 원본 SMILES 및 XYZ 경로
+- `runs/adam_decode/optimized_structure.xyz`: RDKit 기반 3D 좌표 파일(필요 시 다른 뷰어로 시각화 가능)
+
 ## 라이선스
 
 원본 GeoLDM 프로젝트는 MIT 라이선스를 따릅니다. 이 정리본 또한 동일한 라이선스 정책을 적용합니다.
