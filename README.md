@@ -31,141 +31,37 @@
 
 ## 사용 방법
 
-아래 예시는 "SMILES → 3D → 잠재 공간 확산 → 3D 복원 → SMILES"의 전체 흐름을 최소 코드로 보여줍니다.
-각 단계가 함수로 분리되어 있어 다른 프로젝트나 노트북으로 쉽게 옮겨 쓸 수 있습니다.
+아래 코드는 `geoldm.qm9.model_module`에 준비된 헬퍼만 이용해 "SMILES → 3D → 잠재 확산 → 3D 복원"을 20줄 내외로 실행하는 예시입니다.
 
 ```python
-from __future__ import annotations
-
-import pickle
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import torch
 import torch.nn.functional as F
 
-from geoldm import (
-    decode,
-    encode,
-    load_model,
-    run_diffusion,
-    smiles_to_3d,
-    structure_to_smiles,
-    visualize_molecule_3d,
-)
-from geoldm.configs import get_dataset_info
-from geoldm.qm9 import dataset
+from geoldm import decode, encode, run_diffusion, smiles_to_3d, visualize_molecule_3d
+from geoldm.qm9 import model_module as qm9
 
+# 1) 학습된 잠재 확산 모델 불러오기 (자동으로 CPU/GPU 선택)
+model, dataset_info, nodes_dist, device = qm9.load_qm9_latent_diffusion(Path("./qm9_latent2"))
 
-def load_qm9_latent_diffusion(checkpoint_dir: Path):
-    """Load a pretrained latent diffusion model and its dataset metadata."""
+# 2) SMILES를 3D 텐서로 변환
+conf = smiles_to_3d("CCO")[0]
+atom_decoder = dataset_info["atom_decoder"]
+atom_indices = torch.tensor([atom_decoder.index(a) for a in conf["atom_symbols"]], device=device)
+x = torch.tensor(conf["coordinates"], device=device, dtype=torch.float32).unsqueeze(0)
+h = {
+    "categorical": F.one_hot(atom_indices, num_classes=len(atom_decoder)).float().unsqueeze(0),
+    "integer": torch.zeros(1, atom_indices.numel(), 1, device=device),
+}
+node_mask = torch.ones(1, atom_indices.numel(), 1, device=device)
+edge_mask = node_mask.squeeze(-1)[..., None] * node_mask.squeeze(-1)[:, None]
 
-    args_path = checkpoint_dir / "args.pickle"
-    with args_path.open("rb") as handle:
-        args = pickle.load(handle)
-
-    # CPU에서도 바로 실행할 수 있도록 CUDA 플래그를 강제 조정.
-    if not torch.cuda.is_available():
-        setattr(args, "cuda", False)
-
-    dataset_info = get_dataset_info(args.dataset, args.remove_h)
-    dataloaders, _ = dataset.retrieve_dataloaders(args)
-    train_loader = dataloaders["train"]
-
-    model, nodes_dist, _ = load_model(
-        stage="latent_diffusion",
-        args=args,
-        dataset_info=dataset_info,
-        dataloader_train=train_loader,
-        checkpoint_path=checkpoint_dir,
-    )
-    device = next(model.parameters()).device
-    return model, dataset_info, nodes_dist, device
-
-
-def conformer_to_tensors(
-    conformer: Dict,
-    dataset_info: Dict,
-    device: torch.device,
-) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
-    """Convert a single RDKit conformer into GeoLDM-ready tensors."""
-
-    atom_decoder: List[str] = dataset_info["atom_decoder"]
-    atom_encoder = {symbol: idx for idx, symbol in enumerate(atom_decoder)}
-    atom_indices = torch.tensor(
-        [atom_encoder[symbol] for symbol in conformer["atom_symbols"]],
-        dtype=torch.long,
-        device=device,
-    )
-
-    one_hot = F.one_hot(atom_indices, num_classes=len(atom_decoder)).float()
-    positions = torch.tensor(conformer["coordinates"], dtype=torch.float32, device=device)
-
-    # Batch 차원을 추가하고 마스크를 구성합니다.
-    x = positions.unsqueeze(0)
-    h = {
-        "categorical": one_hot.unsqueeze(0),
-        # 전하 정보가 없으면 0으로 채웁니다.
-        "integer": torch.zeros(one_hot.shape[0], 1, device=device).unsqueeze(0),
-    }
-
-    node_mask = torch.ones(x.shape[0], x.shape[1], 1, device=device)
-    edge_mask = node_mask.squeeze(-1)[..., None] * node_mask.squeeze(-1)[:, None]
-    return x, h, node_mask, edge_mask
-
-
-def main():
-    checkpoint_dir = Path("./qm9_latent2")
-    model, dataset_info, nodes_dist, device = load_qm9_latent_diffusion(checkpoint_dir)
-
-    # 1) SMILES → 3D 좌표
-    conformer = smiles_to_3d("CCO")[0]
-    x, h, node_mask, edge_mask = conformer_to_tensors(conformer, dataset_info, device)
-
-    # 2) 3D 구조 → LDM 인코더 잠재벡터
-    z_x, z_sigma_x, z_h, z_sigma_h = encode(model, x, h, node_mask=node_mask, edge_mask=edge_mask)
-
-    # 3) 인코딩 벡터를 확산 모델로 보정/샘플링
-    n_nodes = x.size(1)
-    n_samples = 1
-    # GeoLDM의 확산 샘플러는 원래 nodes_dist를 사용하므로 동일한 노드 수로 호출합니다.
-    samples = run_diffusion(
-        model,
-        n_samples=n_samples,
-        n_nodes=n_nodes,
-        node_mask=node_mask,
-        edge_mask=edge_mask,
-        context=None,
-        fix_noise=True,
-    )
-    sampled_z, _ = samples  # (latent_x, latent_h)
-
-    # 4) 잠재벡터 → 3D 구조 복원
-    decoded_positions, decoded_features = decode(
-        model,
-        sampled_z,
-        node_mask=node_mask,
-        edge_mask=edge_mask,
-    )
-
-    # 5) 3D 구조 → SMILES
-    atom_types = decoded_features["categorical"].argmax(dim=-1)[0].cpu().numpy()
-    atom_symbols = [dataset_info["atom_decoder"][i] for i in atom_types]
-    new_smiles, _ = structure_to_smiles(atom_symbols, decoded_positions[0].cpu().numpy())
-    print(f"Generated SMILES: {new_smiles}")
-
-    # 6) 구조 저장/시각화
-    visualize_molecule_3d(
-        atom_symbols,
-        decoded_positions[0].cpu().numpy(),
-        out_html="molecule_visualization.html",
-        show=False,
-    )
-    print("Visualization saved to molecule_visualization.html")
-
-
-if __name__ == "__main__":
-    main()
+# 3) 잠재 확산 샘플링 후 디코딩
+sampled_z, _ = run_diffusion(model, 1, atom_indices.numel(), node_mask, edge_mask, context=None, fix_noise=True)
+positions, features = decode(model, sampled_z, node_mask=node_mask, edge_mask=edge_mask)
+symbols = [atom_decoder[i] for i in features["categorical"].argmax(dim=-1)[0].tolist()]
+visualize_molecule_3d(symbols, positions[0].cpu().numpy(), out_html="molecule_visualization.html", show=False)
 ```
 
 ### 주요 모듈 요약
@@ -179,9 +75,30 @@ if __name__ == "__main__":
 
 ### 플라스틱 물성 예측 노트북(`plastic.ipynb`)
 
-- `Property Prediction` 섹션의 `train_multitask_mlp` 함수는 검증 손실이 개선될 때마다 베스트 모델 가중치와 입력/타깃 스케일러를 함께 `models/plastic_mlp_best.pt`로 저장합니다.
-- 저장 시점(에폭, 검증 손실)이 표준 출력과 TensorBoard에 기록되므로, 가장 우수한 체크포인트를 추적하기 쉽습니다.
-- 학습 후 `load_mlp_checkpoint` 함수를 사용해 베스트 모델과 스케일러를 다시 불러온 뒤 곧바로 추론에 활용할 수 있습니다.
+- `data/plastic.parquet`의 단량체 SMILES를 GeoLDM으로 인코딩해 `latents.pt`에 캐싱한 뒤, `MixtureMLP`로 14개 물성을 동시 학습합니다.
+- `mixture_mlp.pt`에는 가중치뿐 아니라 입력/출력 차원(`input_dim`, `output_dim`)과 스케일 정보(`target_means`, `target_stds`)가 함께 저장됩니다.
+- PyTorch 2.6 이상에서는 로딩 시 `weights_only=False` 혹은 `torch.serialization.add_safe_globals([...])`를 함께 지정해야 합니다.
+- 노트북에 정의된 `MixtureMLP` 클래스를 그대로 가져와 아래처럼 빠르게 예측을 재현할 수 있습니다.
+
+```python
+import numpy as np
+import torch
+from torch.serialization import add_safe_globals
+from plastic import MixtureMLP  # 노트북에서 정의한 MLP를 동일하게 사용
+
+add_safe_globals([np._core.multiarray._reconstruct])
+ckpt = torch.load("mixture_mlp.pt", map_location="cpu", weights_only=False)
+model = MixtureMLP(input_dim=ckpt["input_dim"], output_dim=ckpt["output_dim"], hidden_sizes=(512, 256))
+model.load_state_dict(ckpt["model_state_dict"])
+model.eval()
+
+latent = torch.load("latents.pt")
+zA, zB = latent["[*]CCCCCC(=O)N[*]"], latent["[*]CCOC(=O)c1ccc(C(=O)O[*])cc1"]
+alpha = torch.tensor([0.5])
+features = torch.cat([zA, zB, alpha * zA + (1 - alpha) * zB, torch.abs(zA - zB), alpha])
+pred_scaled = model(features.unsqueeze(0))
+pred = pred_scaled * ckpt["target_stds"] + ckpt["target_means"]
+```
 
 ### Adam 최적화 + 3D 디코딩 스크립트(`plastic_design.py`)
 
