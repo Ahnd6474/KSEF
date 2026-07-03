@@ -1,121 +1,155 @@
-# GeoLDM Core Modules
+# BigSMILES MLM
 
-이 저장소는 GeoLDM 원본 레포지토리에서 모델 실행에 필요한 최소 모듈만 분리하여 정리한 버전입니다.
-`geoldm` 패키지는 모델 정의, 사전 학습 체크포인트 로딩, 샘플링 및 시각화에 필요한 유틸리티만 포함하도록 가볍게 구성되어 있습니다
-.
+A masked language model for polymer representations written in BigSMILES.
 
-## 폴더 구조
+This repository fine-tunes
+[`DeepChem/ChemBERTa-77M-MTR`](https://huggingface.co/DeepChem/ChemBERTa-77M-MTR)
+on a local corpus of 4,926,212 BigSMILES strings. The trained model and
+tokenizer are included in `bigsmiles-mlm/`, so inference does not require
+retraining.
 
-```
-├── geoldm/
-│   ├── __init__.py                # GeoLDM 핵심 진입점
-│   ├── configs/                   # 데이터셋 메타 정보
-│   ├── egnn/                      # EGNN 기반 네트워크 구현
-│   ├── equivariant_diffusion/     # (잠재) 확산 모델 구성 요소
-│   ├── geom/                      # GEOM-Drugs 데이터 로더 보조 모듈
-│   └── qm9/                       # QM9 데이터 및 모델 유틸리티
-└── data_plastic.parquet           # 사용자가 추가한 데이터 (예시)
-```
+## What is included
 
-## 설치
+| Path | Purpose |
+| --- | --- |
+| `MLM.ipynb` | Loads the corpus, prepares the tokenizer, and trains the MLM |
+| `big_smiles/` | 50 CSV shards containing the training corpus |
+| `bigsmiles-mlm/` | Trained model and tokenizer for inference |
+| `bigsmiles-chemberta-mlm/` | Retained checkpoints from the five-epoch training run |
+| `runs/bigsmiles_mlm/` | TensorBoard logs |
+| `train.csv`, `eval.csv` | Exported training and evaluation loss samples |
 
-필요한 의존성은 원본 GeoLDM 프로젝트와 동일합니다. 대표적으로 다음 패키지가 필요합니다.
+The GeoLDM, QM9, and plastic-mixture files are legacy experiments. They are
+not required to train or use the BigSMILES MLM.
 
-- Python ≥ 3.9
-- PyTorch ≥ 1.12
-- NumPy, SciPy
-- Matplotlib (시각화)
-- RDKit (SMILES/3D 변환 기능을 사용할 경우)
+## Setup
 
-의존성 관리는 환경마다 다르므로, 기존 GeoLDM 환경을 그대로 활용하는 것을 권장합니다.
-
-## 사용 방법
-
-아래 코드는 `geoldm.qm9.model_module`에 준비된 헬퍼만 이용해 "SMILES → 3D → 잠재 확산 → 3D 복원"을 20줄 내외로 실행하는 예시입니다.
-
-```python
-from pathlib import Path
-
-import torch
-import torch.nn.functional as F
-
-from geoldm import decode, encode, run_diffusion, smiles_to_3d, visualize_molecule_3d
-from geoldm.qm9 import model_module as qm9
-
-# 1) 학습된 잠재 확산 모델 불러오기 (자동으로 CPU/GPU 선택)
-model, dataset_info, nodes_dist, device = qm9.load_qm9_latent_diffusion(Path("./qm9_latent2"))
-
-# 2) SMILES를 3D 텐서로 변환
-conf = smiles_to_3d("CCO")[0]
-atom_decoder = dataset_info["atom_decoder"]
-atom_indices = torch.tensor([atom_decoder.index(a) for a in conf["atom_symbols"]], device=device)
-x = torch.tensor(conf["coordinates"], device=device, dtype=torch.float32).unsqueeze(0)
-h = {
-    "categorical": F.one_hot(atom_indices, num_classes=len(atom_decoder)).float().unsqueeze(0),
-    "integer": torch.zeros(1, atom_indices.numel(), 1, device=device),
-}
-node_mask = torch.ones(1, atom_indices.numel(), 1, device=device)
-edge_mask = node_mask.squeeze(-1)[..., None] * node_mask.squeeze(-1)[:, None]
-
-# 3) 잠재 확산 샘플링 후 디코딩
-sampled_z, _ = run_diffusion(model, 1, atom_indices.numel(), node_mask, edge_mask, context=None, fix_noise=True)
-positions, features = decode(model, sampled_z, node_mask=node_mask, edge_mask=edge_mask)
-symbols = [atom_decoder[i] for i in features["categorical"].argmax(dim=-1)[0].tolist()]
-visualize_molecule_3d(symbols, positions[0].cpu().numpy(), out_html="molecule_visualization.html", show=False)
-```
-
-### 주요 모듈 요약
-
-- `geoldm.load_model`: 체크포인트를 로드하고 지정한 단계(diffusion/autoencoder/latent_diffusion)의 모델을 반환합니다.
-- `geoldm.qm9.dataset.retrieve_dataloaders`: QM9/GEOM 데이터셋 로더를 구성합니다.
-- `geoldm.qm9.sampling`: 확산 모델에서 샘플을 생성하거나 체인/애니메이션을 만드는 함수 모음입니다.
-- `geoldm.qm9.model_module`: 인코딩/디코딩, RDKit 기반 구조 변환, 간단한 시각화 헬퍼를 제공합니다.
-
-필요 시 `geoldm.egnn`, `geoldm.equivariant_diffusion` 하위 모듈을 직접 임포트하여 네트워크를 커스터마이징할 수 있습니다.
-
-### 플라스틱 물성 예측 노트북(`plastic.ipynb`)
-
-- `data/plastic.parquet`의 단량체 SMILES를 GeoLDM으로 인코딩해 `latents.pt`에 캐싱한 뒤, `MixtureMLP`로 14개 물성을 동시 학습합니다.
-- `mixture_mlp.pt`에는 가중치뿐 아니라 입력/출력 차원(`input_dim`, `output_dim`)과 스케일 정보(`target_means`, `target_stds`)가 함께 저장됩니다.
-- PyTorch 2.6 이상에서는 로딩 시 `weights_only=False` 혹은 `torch.serialization.add_safe_globals([...])`를 함께 지정해야 합니다.
-- 노트북에 정의된 `MixtureMLP` 클래스를 그대로 가져와 아래처럼 빠르게 예측을 재현할 수 있습니다.
-
-```python
-import numpy as np
-import torch
-from torch.serialization import add_safe_globals
-from plastic import MixtureMLP  # 노트북에서 정의한 MLP를 동일하게 사용
-
-add_safe_globals([np._core.multiarray._reconstruct])
-ckpt = torch.load("mixture_mlp.pt", map_location="cpu", weights_only=False)
-model = MixtureMLP(input_dim=ckpt["input_dim"], output_dim=ckpt["output_dim"], hidden_sizes=(512, 256))
-model.load_state_dict(ckpt["model_state_dict"])
-model.eval()
-
-latent = torch.load("latents.pt")
-zA, zB = latent["[*]CCCCCC(=O)N[*]"], latent["[*]CCOC(=O)c1ccc(C(=O)O[*])cc1"]
-alpha = torch.tensor([0.5])
-features = torch.cat([zA, zB, alpha * zA + (1 - alpha) * zB, torch.abs(zA - zB), alpha])
-pred_scaled = model(features.unsqueeze(0))
-pred = pred_scaled * ckpt["target_stds"] + ckpt["target_means"]
-```
-
-### Adam 최적화 + 3D 디코딩 스크립트(`plastic_design.py`)
-
-`plastic_design.py` 스크립트는 플라스틱 물성 surrogate(MLP)를 이용해 잠재벡터를 Adam으로 탐색하고, 결과를 DataFrame으로 저장한 뒤 가장 가까운 실데이터 SMILES를 3D 구조(XYZ)로 저장합니다.
+The corpus CSV files use Git LFS. Pull them after cloning:
 
 ```bash
-python plastic_design.py \
-  --surrogate models/plastic_mlp_best.pt \
-  --plastic-df data/plastic.parquet \
-  --latent-cache data/plastic_latents.pt \
-  --steps 200 --lr 5e-3 --output-dir runs/adam_decode
+git clone https://github.com/Ahnd6474/BigsmilesMLM.git
+cd BigsmilesMLM
+git lfs pull
 ```
 
-- `runs/adam_decode/adam_history.parquet`: 최적화 과정의 지표 기록(step, J, penalty 등)
-- `runs/adam_decode/adam_best.parquet`: 최적화된 잠재벡터, 예측 물성, 가장 가까운 원본 SMILES 및 XYZ 경로
-- `runs/adam_decode/optimized_structure.xyz`: RDKit 기반 3D 좌표 파일(필요 시 다른 뷰어로 시각화 가능)
+Create an environment and install the packages used by `MLM.ipynb`:
 
-## 라이선스
+```bash
+python -m venv .venv
+```
 
-원본 GeoLDM 프로젝트는 MIT 라이선스를 따릅니다. 이 정리본 또한 동일한 라이선스 정책을 적용합니다.
+Activate it on Windows:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Or on macOS and Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+Then install the notebook and training dependencies:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install torch pandas transformers datasets accelerate jupyterlab tensorboard
+```
+
+`requirements.txt` also contains packages used by older experiments in this
+repository. They are not needed for the MLM workflow.
+
+## Use the trained model
+
+The committed checkpoint can fill a masked position in a BigSMILES string:
+
+```python
+import torch
+from transformers import AutoModelForMaskedLM, AutoTokenizer
+
+model_path = "bigsmiles-mlm"
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+model = AutoModelForMaskedLM.from_pretrained(model_path)
+model.eval()
+
+text = "{[*]CC[MASK]CC[*]}"
+inputs = tokenizer(text, return_tensors="pt")
+mask_position = (inputs["input_ids"] == tokenizer.mask_token_id).nonzero()[0, 1]
+
+with torch.no_grad():
+    logits = model(**inputs).logits[0, mask_position]
+
+for token_id in logits.topk(5).indices:
+    print(tokenizer.decode([token_id]))
+```
+
+With the committed checkpoint, this example returns `O`, `N`, `S`, `C`, and
+`1` as the five highest-logit tokens.
+
+## Train the model
+
+Start JupyterLab and open `MLM.ipynb`:
+
+```bash
+jupyter lab
+```
+
+The notebook performs the following steps:
+
+1. Reads every `big_smiles/polyBERT_len85_*.csv` shard and concatenates the
+   `0` column.
+2. Creates a 90/10 train-validation split with seed 42.
+3. Loads the ChemBERTa tokenizer and adds `{`, `}`, `$`, and `[*]`.
+4. Tokenizes each sequence to a maximum length of 256.
+5. Applies dynamic masking with a 15% mask probability.
+6. Fine-tunes for five epochs and writes TensorBoard logs and checkpoints.
+
+The training configuration recorded in the notebook is:
+
+| Setting | Value |
+| --- | --- |
+| Base model | `DeepChem/ChemBERTa-77M-MTR` |
+| Corpus size | 4,926,212 strings |
+| Validation fraction | 10% |
+| Maximum sequence length | 256 tokens |
+| Mask probability | 0.15 |
+| Batch size | 32 per device |
+| Epochs | 5 |
+| Learning rate | `5e-5` |
+| Weight decay | `0.01` |
+| Warmup ratio | `0.06` |
+
+Full-corpus training is GPU-oriented and produced 769,725 optimizer steps in
+the retained run. For a smoke test, load only one or two CSV shards before
+starting the trainer.
+
+## Monitor training
+
+Read the saved event file with TensorBoard:
+
+```bash
+tensorboard --logdir runs/bigsmiles_mlm
+```
+
+The retained checkpoints are under `bigsmiles-chemberta-mlm/`. For normal
+inference, use `bigsmiles-mlm/`; it contains the model, tokenizer,
+vocabulary, and training arguments.
+
+## Model details
+
+The committed checkpoint is a RoBERTa masked-language model with:
+
+- a 597-token vocabulary;
+- 384 hidden dimensions;
+- 3 hidden layers;
+- 12 attention heads;
+- a tokenizer limit of 512 positions.
+
+The training notebook uses 256 positions even though the saved model supports
+up to 512.
+
+## License
+
+See [LICENSE](LICENSE). The current license file retains the copyright and MIT
+license notice from the GeoLDM source previously included in this repository.
